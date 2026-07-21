@@ -1,0 +1,14 @@
+# Secrets – niemals committen
+.env
+
+# macOS
+.DS_Store
+
+# Editor/Workspace
+*.code-workspace
+
+# Tooling-internes Verzeichnis
+.claude/
+
+# Marketing-Entwurf – bleibt lokal, nicht ins öffentliche Repo
+linkedin-post.md

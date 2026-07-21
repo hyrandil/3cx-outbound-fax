@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Optionaler 3CX Session Border Controller (SBC)
+#
+#  NUR nötig bei CLOUD-gehostetem 3CX (z.B. *.on3cx.de): dort verweigert 3CX die
+#  direkte Registrierung von Fremdgeräten (sofortiges 403 Forbidden). Der SBC
+#  baut einen vertrauenswürdigen Tunnel zur Cloud auf; der Faxserver registriert
+#  sich dann ÜBER den SBC. On-Premise-3CX braucht das NICHT (dann direkt/LAN).
+#
+#  Setup:
+#    1. 3CX Admin → SBCs → SBC anlegen → PBX_URL + PBX_KEY notieren
+#    2. In .env eintragen: PBX_URL, PBX_KEY, SBC_VERSION (= 3CX-Hauptversion!)
+#    3. Beides zusammen starten:
+#       docker compose -f docker-compose.yml -f docker-compose.sbc.yml up -d
+#    4. Im Faxserver-.env: SIP_OUTBOUND_PROXY=127.0.0.1 (SBC auf demselben Host)
+#
+#  Image: Community-Wrapper um das offizielle 3CX-SBC-Debian-Paket.
+#  Tag MUSS zur 3CX-Version passen (z.B. 20.0 für 3CX v20).
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  sbc:
+    image: apyos/docker-3cx-sbc:${SBC_VERSION:-latest}
+    container_name: 3cx-sbc
+    restart: unless-stopped
+    # Host-Netz ist PFLICHT: im Bridge-Netz beantwortet der reSIProcate-Stack
+    # des SBC weitergeleitete REGISTER selbst mit "503 No DNS results"
+    # (kein Transport zum Tunnel auffindbar) – unabhängig von DNS/hosts/
+    # LocalSipAddr. Der Tunnel zu 3CX (TCP 5090) ist rein ausgehend.
+    # Belegt am Host: UDP 5060 (SIP) + UDP 20000-20063 (RTP).
+    network_mode: host
+    environment:
+      - PBX_URL=${PBX_URL:?Bitte PBX_URL (Provisioning-URL) in .env setzen}
+      - PBX_KEY=${PBX_KEY:?Bitte PBX_KEY (SBC Auth-Key) in .env setzen}

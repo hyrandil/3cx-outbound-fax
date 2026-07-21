@@ -1,0 +1,8 @@
+# Build-Kontext schlank halten – nur was das Dockerfile wirklich kopiert
+# (macos/ + windows/ werden gebraucht: die API liefert die Client-Scripts aus)
+.git
+.github
+.env
+*.md
+*.code-workspace
+.DS_Store

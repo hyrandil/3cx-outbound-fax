@@ -1,0 +1,110 @@
+#!/bin/bash
+# ══════════════════════════════════════════════════════════
+#  Fax senden – macOS PDF Service
+#
+#  Ablageort:  ~/Library/PDF Services/Fax senden
+#  Erscheint in jedem Druckdialog unter:
+#    Ablage → Drucken → PDF ▼ → "Fax senden"
+#
+#  macOS übergibt die temporäre PDF als eines der Argumente –
+#  je nach macOS-Version an unterschiedlicher Position. Daher
+#  suchen wir die PDF unter ALLEN Argumenten statt fix $1.
+# ══════════════════════════════════════════════════════════
+
+# ── Konfiguration (install.sh ersetzt DEIN_SERVER_IP) ──────
+FAX_SERVER="${FAX_SERVER:-DEIN_SERVER_IP}"
+FAX_PORT="${FAX_PORT:-18080}"
+# ──────────────────────────────────────────────────────────
+
+# ── PDF unter den Argumenten finden ────────────────────────
+PDF_FILE=""
+for arg in "$@"; do
+    if [ -f "$arg" ]; then
+        case "$arg" in
+            *.pdf|*.PDF) PDF_FILE="$arg"; break ;;
+        esac
+        [ -z "$PDF_FILE" ] && PDF_FILE="$arg"
+    fi
+done
+
+if [ -z "$PDF_FILE" ] || [ ! -f "$PDF_FILE" ]; then
+    osascript -e 'display dialog "Es wurde keine PDF-Datei übergeben.\n\nBitte über den Druckdialog aufrufen:\nAblage → Drucken (⌘P) → unten links PDF ▼ → „Fax senden“." buttons {"OK"} with icon stop with title "Fax senden"'
+    exit 1
+fi
+
+# ── Server erreichbar & registriert? ───────────────────────
+HEALTH=$(curl -s --max-time 3 "http://${FAX_SERVER}:${FAX_PORT}/health" 2>/dev/null)
+if [ -z "$HEALTH" ]; then
+    osascript -e "display dialog \"Der Fax-Server antwortet nicht:\nhttp://${FAX_SERVER}:${FAX_PORT}\n\nBitte prüfen:\n• Läuft der Docker-Container?  (docker compose ps)\n• Stimmen Adresse und Port oben in diesem Script?\n• Zum Testen im Browser öffnen:\n   http://${FAX_SERVER}:${FAX_PORT}/health\" buttons {\"OK\"} with icon stop with title \"Fax senden\""
+    exit 1
+fi
+if ! echo "$HEALTH" | grep -q '"registered": *true'; then
+    osascript -e "display dialog \"Der Fax-Server läuft, ist aber nicht an der 3CX-Anlage angemeldet – das Fax würde fehlschlagen.\n\nBitte prüfen:\n• 3CX erreichbar? SBC verbunden?\n• Zugangsdaten in der .env korrekt?\n• Details:  docker logs faxserver\" buttons {\"OK\"} with icon stop with title \"Fax senden\""
+    exit 1
+fi
+
+# ── Faxnummer abfragen ─────────────────────────────────────
+RESULT=$(osascript <<'APPLESCRIPT'
+-- KEIN "tell System Events": das bräuchte eine Automation-Berechtigung,
+-- die der Druckdienst nicht hat → Dialog erschiene stumm nie.
+tell me to activate
+set dlg to display dialog "Faxnummer eingeben:" & return & "(z.B. 068112345 oder +4968112345)" ¬
+    default answer "" ¬
+    with title "Fax senden" ¬
+    buttons {"Abbrechen", "Senden"} ¬
+    default button "Senden"
+if button returned of dlg is "Abbrechen" then
+    return ""
+end if
+return text returned of dlg
+APPLESCRIPT
+)
+
+# Abgebrochen?
+if [ -z "$RESULT" ]; then
+    exit 0
+fi
+
+# Leerzeichen entfernen
+FAXNUM=$(echo "$RESULT" | tr -d ' ')
+
+# ── PDF an API senden ──────────────────────────────────────
+TMPRESPONSE=$(mktemp /tmp/fax-response-XXXXXX)
+
+# Die API blockiert, bis das Fax übertragen ist (bis ~90 s) → großzügiges
+# Timeout, sonst bricht curl ab (HTTP 000), obwohl das Fax noch läuft.
+HTTP_CODE=$(curl -s \
+    -o "$TMPRESPONSE" \
+    -w "%{http_code}" \
+    -X POST \
+    --max-time 150 \
+    -F "file=@${PDF_FILE};type=application/pdf" \
+    -F "number=${FAXNUM}" \
+    "http://${FAX_SERVER}:${FAX_PORT}/fax")
+
+RESPONSE_BODY=$(cat "$TMPRESPONSE")
+rm -f "$TMPRESPONSE"
+
+# ── Ergebnis anzeigen ──────────────────────────────────────
+if [ "$HTTP_CODE" = "200" ]; then
+    # API-Antwort: {"status":"sent","number":"…","result":"…"}
+    DETAIL=$(echo "$RESPONSE_BODY" | sed -n 's/.*"result": *"\([^"]*\)".*/\1/p')
+    osascript -e "display notification \"Fax an ${FAXNUM}: ${DETAIL:-eingereicht}\" with title \"Fax senden\""
+elif [ "$HTTP_CODE" = "000" ]; then
+    # curl-Timeout/Verbindungsabbruch: das Fax kann trotzdem noch durchlaufen
+    osascript -e "display notification \"Nach 150 s keine Antwort – das Fax an ${FAXNUM} läuft evtl. noch. Sendeprotokoll: http://${FAX_SERVER}:${FAX_PORT}/\" with title \"Fax senden\""
+else
+    # API-Fehler: "error" (z.B. PDF-Konvertierung) oder "result" (z.B. FAILED =
+    # Gegenstelle nicht erreicht / kein Fax) enthalten die Ursache
+    ERR=$(echo "$RESPONSE_BODY" | sed -n 's/.*"error": *"\([^"]*\)".*/\1/p')
+    [ -z "$ERR" ] && ERR=$(echo "$RESPONSE_BODY" | sed -n 's/.*"result": *"\([^"]*\)".*/\1/p')
+    case "$ERR" in
+        FAILED*call-setup*) ERR="Die Gegenstelle wurde nicht erreicht (besetzt, falsche Nummer oder Ziel nimmt nicht ab)." ;;
+        FAILED*)            ERR="Übertragung fehlgeschlagen: ${ERR}\n\nIst die Gegenstelle wirklich ein Faxgerät? Bei externen Zielen: unterstützt der 3CX-Trunk T.38?" ;;
+        "")                 ERR="Unerwartete Antwort (HTTP ${HTTP_CODE}).\n\nDetails:  docker logs faxserver" ;;
+    esac
+    osascript -e "display dialog \"Fax an ${FAXNUM} fehlgeschlagen.\n\n${ERR}\" buttons {\"OK\"} with icon stop with title \"Fax senden\""
+    exit 1
+fi
+
+exit 0

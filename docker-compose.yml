@@ -1,0 +1,38 @@
+services:
+  faxserver:
+    # Standard: fertiges Multi-Arch-Image aus GHCR ziehen (kein lokaler Build).
+    # Für lokale Entwicklung stattdessen bauen:  docker compose build
+    image: ghcr.io/amfeld/3cx-outbound-fax:latest
+    build: .
+    container_name: faxserver
+    restart: unless-stopped
+    # Host-Netz statt Bridge: SIP/RTP/T.38 brauchen NAT-freie Pfade. Im Bridge-
+    # Netz scheitert insbesondere die Kombination mit dem 3CX-SBC (dessen
+    # reSIProcate-Stack beantwortet weitergeleitete REGISTER dann selbst mit
+    # "503 No DNS results"). Ports binden daher direkt am Host:
+    #   - Fax-API:  FAX_API_PORT  (Default 18080)
+    #   - SIP:      SIP_BIND_PORT (Default 5062 – 5060 bleibt für den SBC frei)
+    network_mode: host
+    environment:
+      - SIP_EXTENSION=${SIP_EXTENSION:-890}
+      - SIP_AUTH_ID=${SIP_AUTH_ID:?Bitte SIP_AUTH_ID in .env setzen}
+      - SIP_PASSWORD=${SIP_PASSWORD:?Bitte SIP_PASSWORD in .env setzen}
+      - SIP_PROXY=${SIP_PROXY:?Bitte SIP_PROXY in .env setzen}
+      - SIP_PORT=${SIP_PORT:-5060}
+      # Lokaler SIP-Bind-Port von Asterisk (≠5060, wenn der SBC mit auf dem
+      # Host läuft und 5060 belegt)
+      - SIP_BIND_PORT=${SIP_BIND_PORT:-5062}
+      # Outbound-Proxy (SBC bei Cloud-3CX); leer = direkt an SIP_PROXY.
+      # SBC auf demselben Host (docker-compose.sbc.yml) → 127.0.0.1
+      - SIP_OUTBOUND_PROXY=${SIP_OUTBOUND_PROXY:-}
+      - FAX_NUMBER=${FAX_NUMBER:?Bitte FAX_NUMBER in .env setzen}
+      # Optional: Name in der Fax-Kopfzeile (T.30 header)
+      - FAX_OWNER=${FAX_OWNER:-}
+      # Port der Fax-API (bindet im Host-Netz direkt am Host; 8080 ist oft belegt)
+      - API_PORT=${FAX_API_PORT:-18080}
+    volumes:
+      - fax-logs:/var/log/asterisk
+
+volumes:
+  fax-logs:
+    name: faxserver-logs
