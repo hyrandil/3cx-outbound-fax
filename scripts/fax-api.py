@@ -421,6 +421,11 @@ for (var el of document.querySelectorAll('.ts')) {{
         port = str(os.environ.get('API_PORT', 8080))
         body = body.replace('DEIN_SERVER_IP', host).replace('18080', port)
         data = body.encode('utf-8')
+
+        # Windows PowerShell 5.1 benötigt für UTF-8-Scripts ein BOM.
+        if which == 'windows':
+            data = b'\xef\xbb\xbf' + data
+
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain; charset=utf-8')
         self.send_header('Content-Disposition',
